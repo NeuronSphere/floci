@@ -242,6 +242,53 @@ The following flags are refused outright because they conflict with the k3s embe
 - **Malformed arguments**: If an argument tag is blank, contains control characters, or cannot be parsed, Floci logs a warning and proceeds with cluster creation.
 - **Tag privacy and immutability**: All `floci:*` tags are stripped from public responses and are not returned by `DescribeCluster` or `ListTagsForResource`. Modification via `TagResource` after creation is rejected with `ValidationException`.
 
+## Host volumes (emulator affordance)
+
+Real EKS has no way to mount a directory from your machine into a cluster node. For local development, Floci can bind-mount host directories into the cluster's k3s container, where pods reach them with a `hostPath` volume. A typical use is letting notebooks, build jobs or dev servers running in the cluster read and write source checkouts that live on the developer's machine.
+
+Host volumes are requested with reserved tags on `CreateCluster` and are **off by default**: an operator must approve the parent directories first.
+
+### Enabling
+
+| Variable | Description |
+|---|---|
+| `FLOCI_SERVICES_EKS_HOST_VOLUME_ROOTS` | Comma-separated allowlist of parent directories. A host path must resolve under one of them. |
+| `FLOCI_SERVICES_EKS_ALLOW_UNSAFE_HOST_VOLUMES` | `true` allows any host path, bypassing the allowlist. |
+
+The same checks guard [ECS host volumes](ecs.md): relative paths, `..` segments, the bare root `/`, and the Docker socket (or any directory that contains it, such as `/var/run`) are always rejected, even with the unsafe setting. Symlinked parents are resolved before the allowlist comparison.
+
+### Tag formats
+
+- Prefixed tag: `floci:host-volume:<label>` with the tag value `/host/path:/container/path`, optionally followed by `:ro` (read-only) or `:rw` (the default). The label only keeps tag keys unique.
+- Plural tag: `floci:host-volumes` with a JSON array of the same specs, for example `["/srv/projects:/workspace", "/srv/data:/data:ro"]`.
+
+Paths are absolute, Unix-style paths. The host path is resolved by the Docker daemon, so when Floci itself runs in a container it is a path on the Docker host, not inside the Floci container.
+
+```bash
+FLOCI_SERVICES_EKS_HOST_VOLUME_ROOTS=/Users/dev/projects
+
+aws --endpoint-url http://localhost:4566 eks create-cluster \
+  --name dev \
+  --role-arn arn:aws:iam::000000000000:role/eks-role \
+  --tags 'floci:host-volume:workspace=/Users/dev/projects:/workspace'
+```
+
+A pod then mounts it from the node:
+
+```yaml
+volumes:
+  - name: workspace
+    hostPath:
+      path: /workspace/my-repo
+      type: Directory
+```
+
+### Rules
+
+- **Creation only**: like the other `floci:*` tags, host volumes are read once at `CreateCluster`, stored with the cluster, and stripped from its public tags. `TagResource` rejects them, so the volumes of an existing cluster cannot change.
+- **Malformed specs are rejected**, not skipped: a missing container path, an access mode other than `ro` or `rw`, control characters, a relative container path, a container path that is `/`, contains `..`, or overlaps the k3s data directory `/var/lib/rancher/k3s`, or a container path requested twice all fail `CreateCluster` with `InvalidParameterException`.
+- **Checked again at every launch**: before the k3s container is (re)created, after a restart for example, each stored host path is validated against the current allowlist. Removing a root from the configuration stops the mount instead of it being honored from storage.
+
 ## Encryption and logging configuration
 
 EKS clusters support configuring KMS envelope encryption for secrets and control plane logging export.
@@ -569,6 +616,8 @@ For local testing workflows that rely on automatic volume binding without a CSI 
 | `FLOCI_SERVICES_EKS_IMDS` | `false` | Enable link-local IMDS (`169.254.169.254`) proxy in cluster containers |
 | `FLOCI_SERVICES_EKS_EMBEDDED_DNS` | `true` | Inject Floci's embedded DNS server into cluster containers for Route 53 private hosted zones and internal name resolution |
 | `FLOCI_SERVICES_EKS_VPC_ROUTE_PROGRAMMING` | `true` | Program emulated VPC route table entries into k3s cluster containers |
+| `FLOCI_SERVICES_EKS_HOST_VOLUME_ROOTS` | *(unset)* | Comma-separated allowlist of parent directories for [host volumes](#host-volumes-emulator-affordance); by default every host volume is rejected |
+| `FLOCI_SERVICES_EKS_ALLOW_UNSAFE_HOST_VOLUMES` | `false` | Allow any host path for host volumes, bypassing the allowlist (traversal, bare root, and the Docker socket or an ancestor directory of it are still always rejected) |
 
 ### Kubernetes versions and network configuration
 

@@ -3212,6 +3212,23 @@ public interface EmulatorConfig {
         @WithDefault("true")
         boolean enabled();
 
+        /**
+         * Approved parent directories for cluster host volumes requested with the reserved
+         * {@code floci:host-volume:<label>} / {@code floci:host-volumes} creation tags. A host path
+         * must resolve under one of these roots. Empty (the default) rejects every host volume
+         * unless {@link #allowUnsafeHostVolumes()} is set, subject to the always-on traversal,
+         * bare-root, and Docker socket blocks.
+         */
+        Optional<List<String>> hostVolumeRoots();
+
+        /**
+         * When true, bypasses the {@link #hostVolumeRoots()} allowlist check for cluster host
+         * volumes, allowing any absolute path. Traversal segments, the bare root "/", and the
+         * Docker socket (or any ancestor directory that contains it) are still always rejected.
+         */
+        @WithDefault("false")
+        boolean allowUnsafeHostVolumes();
+
         /** When true, clusters go straight to ACTIVE without starting real Docker containers. */
         @WithDefault("false")
         boolean mock();

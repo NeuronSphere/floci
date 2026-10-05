@@ -112,12 +112,19 @@ class EksServiceTest {
     }
 
     private EmulatorConfig testConfig(boolean mock, boolean keepRunningOnShutdown) {
+        return testConfig(mock, keepRunningOnShutdown, Optional.empty(), false);
+    }
+
+    private EmulatorConfig testConfig(boolean mock, boolean keepRunningOnShutdown,
+                                      Optional<List<String>> hostVolumeRoots, boolean allowUnsafeHostVolumes) {
         EmulatorConfig.EksServiceConfig eksConfig = proxy(EmulatorConfig.EksServiceConfig.class,
                 (proxy, method, args) -> switch (method.getName()) {
                     case "enabled" -> true;
                     case "mock" -> mock;
                     case "keepRunningOnShutdown" -> keepRunningOnShutdown;
                     case "apiServerBasePort" -> 6500;
+                    case "hostVolumeRoots" -> hostVolumeRoots;
+                    case "allowUnsafeHostVolumes" -> allowUnsafeHostVolumes;
                     default -> defaultValue(method);
                 });
         EmulatorConfig.ServicesConfig servicesConfig = proxy(EmulatorConfig.ServicesConfig.class,
@@ -125,12 +132,21 @@ class EksServiceTest {
                     case "eks" -> eksConfig;
                     default -> defaultValue(method);
                 });
+        EmulatorConfig.DockerConfig dockerConfig = proxy(EmulatorConfig.DockerConfig.class,
+                (proxy, method, args) -> defaultValue(method));
         return proxy(EmulatorConfig.class, (proxy, method, args) -> switch (method.getName()) {
             case "services" -> servicesConfig;
+            case "docker" -> dockerConfig;
             case "defaultRegion" -> "us-east-1";
             case "defaultAccountId" -> "000000000000";
             default -> defaultValue(method);
         });
+    }
+
+    private EksService hostVolumeEksService(Optional<List<String>> roots, boolean allowUnsafe) {
+        return new EksService(storageFactory, testConfig(true, false, roots, allowUnsafe), regionResolver, null, null,
+                new EksOidcService(storageFactory, new ObjectMapper()), mock(EksAccessEntryService.class),
+                mock(EksPodIdentityAssociationService.class));
     }
 
     @SuppressWarnings("unchecked")
@@ -2569,6 +2585,14 @@ class EksServiceTest {
     }
 
     private EksService persistentEksService(Path directory, Ec2Service ec2) {
+        return persistentEksService(directory, ec2, testConfig(true));
+    }
+
+    private EksService persistentEksService(Path directory, EmulatorConfig config) {
+        return persistentEksService(directory, ec2Service, config);
+    }
+
+    private EksService persistentEksService(Path directory, Ec2Service ec2, EmulatorConfig config) {
         StorageFactory storageFactory = new StorageFactory(null, null) {
             @Override
             public <V> AccountAwareStorageBackend<V> create(String serviceName, String fileName,
@@ -2579,7 +2603,7 @@ class EksServiceTest {
                 return new AccountAwareStorageBackend<>(backend, null, "000000000000");
             }
         };
-        return new EksService(storageFactory, testConfig(true),
+        return new EksService(storageFactory, config,
                 new RegionResolver("us-east-1", "000000000000"), null, ec2,
                 new EksOidcService(storageFactory, new ObjectMapper()), mock(EksAccessEntryService.class),
                 mock(EksPodIdentityAssociationService.class));
@@ -2673,5 +2697,93 @@ class EksServiceTest {
         Cluster described = after.describeCluster("restart-args-cluster");
         assertEquals(List.of("--kubelet-arg=max-pods=250"), described.getClusterArgs());
         assertEquals(Map.of("owner", "ops"), described.getTags());
+    }
+
+    @Test
+    void createClusterWithHostVolumeIsRejectedByDefault(@TempDir Path hostDir) {
+        CreateClusterRequest req = createTestClusterRequest("host-volume-default");
+        req.setTags(Map.of("floci:host-volume:workspace", hostDir + ":/workspace"));
+
+        AwsException ex = assertThrows(AwsException.class, () -> eksService.createCluster(req));
+        assertEquals("InvalidParameterException", ex.getErrorCode());
+        assertEquals(400, ex.getHttpStatus());
+        assertTrue(ex.getMessage().contains("floci.services.eks.host-volume-roots"), ex.getMessage());
+        assertTrue(ex.getMessage().contains("FLOCI_SERVICES_EKS_HOST_VOLUME_ROOTS"), ex.getMessage());
+    }
+
+    @Test
+    void createClusterWithHostVolumeUnderApprovedRootStoresItAndStripsTag(@TempDir Path root) {
+        Path hostDir = root.resolve("projects");
+        EksService service = hostVolumeEksService(Optional.of(List.of(root.toString())), false);
+        CreateClusterRequest req = createTestClusterRequest("host-volume-ok");
+        req.setTags(Map.of(
+                "floci:host-volume:workspace", hostDir + ":/workspace",
+                "env", "dev"));
+
+        Cluster created = service.createCluster(req);
+        assertEquals(List.of(hostDir + ":/workspace"), created.getHostVolumes());
+        assertEquals(Map.of("env", "dev"), created.getTags());
+
+        Cluster described = service.describeCluster("host-volume-ok");
+        assertEquals(List.of(hostDir + ":/workspace"), described.getHostVolumes());
+    }
+
+    @Test
+    void createClusterWithHostVolumeOutsideApprovedRootIsRejected(@TempDir Path root, @TempDir Path elsewhere) {
+        EksService service = hostVolumeEksService(Optional.of(List.of(root.toString())), false);
+        CreateClusterRequest req = createTestClusterRequest("host-volume-outside");
+        req.setTags(Map.of("floci:host-volume:workspace", elsewhere + ":/workspace"));
+
+        AwsException ex = assertThrows(AwsException.class, () -> service.createCluster(req));
+        assertEquals("InvalidParameterException", ex.getErrorCode());
+        assertTrue(ex.getMessage().contains("not within an approved host-volume root"), ex.getMessage());
+    }
+
+    @Test
+    void createClusterWithDockerSocketHostVolumeIsRejectedEvenWhenUnsafeAllowed() {
+        EksService service = hostVolumeEksService(Optional.empty(), true);
+        CreateClusterRequest req = createTestClusterRequest("host-volume-socket");
+        req.setTags(Map.of("floci:host-volume:sock", "/var/run:/host-run"));
+
+        AwsException ex = assertThrows(AwsException.class, () -> service.createCluster(req));
+        assertEquals("InvalidParameterException", ex.getErrorCode());
+        assertTrue(ex.getMessage().contains("Docker socket"), ex.getMessage());
+    }
+
+    @Test
+    void createClusterWithMalformedHostVolumeIsRejected() {
+        EksService service = hostVolumeEksService(Optional.empty(), true);
+        CreateClusterRequest req = createTestClusterRequest("host-volume-malformed");
+        req.setTags(Map.of("floci:host-volume:bad", "/srv/data:/var/lib/rancher/k3s"));
+
+        AwsException ex = assertThrows(AwsException.class, () -> service.createCluster(req));
+        assertEquals("InvalidParameterException", ex.getErrorCode());
+        assertEquals(400, ex.getHttpStatus());
+    }
+
+    @Test
+    void tagResourceWithHostVolumeTagIsRejected() {
+        createTestCluster("host-volume-tag-resource");
+        Cluster cluster = eksService.describeCluster("host-volume-tag-resource");
+
+        AwsException ex = assertThrows(AwsException.class, () ->
+                eksService.tagResource(cluster.getArn(), Map.of("floci:host-volume:late", "/srv:/srv")));
+        assertEquals("ValidationException", ex.getErrorCode());
+    }
+
+    @Test
+    void hostVolumesSurviveRestart(@TempDir Path directory, @TempDir Path root) {
+        EmulatorConfig config = testConfig(true, false, Optional.of(List.of(root.toString())), false);
+        EksService before = persistentEksService(directory, config);
+        before.init();
+
+        CreateClusterRequest req = createTestClusterRequest("restart-host-volume");
+        req.setTags(Map.of("floci:host-volume:workspace", root + ":/workspace:ro"));
+        before.createCluster(req);
+
+        EksService after = persistentEksService(directory, config);
+        after.init();
+
+        assertEquals(List.of(root + ":/workspace:ro"), after.describeCluster("restart-host-volume").getHostVolumes());
     }
 }

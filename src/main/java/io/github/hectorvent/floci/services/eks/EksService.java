@@ -7,6 +7,7 @@ import io.github.hectorvent.floci.core.common.RegionResolver;
 import io.github.hectorvent.floci.core.common.RequestScopes;
 import io.github.hectorvent.floci.core.common.ReservedTags;
 import io.github.hectorvent.floci.core.common.TagHandler;
+import io.github.hectorvent.floci.core.common.docker.HostPathPolicy;
 import io.github.hectorvent.floci.core.common.docker.UserDataPipeline;
 import io.github.hectorvent.floci.core.storage.AccountAwareStorageBackend;
 import io.github.hectorvent.floci.core.storage.StorageBackend;
@@ -95,6 +96,7 @@ public class EksService implements TagHandler, ResourceProvider {
     private final StorageBackend<String, Nodegroup> nodeGroupStorage;
     private final StorageBackend<String, FargateProfile> fargateProfileStorage;
     private final EmulatorConfig config;
+    private final HostPathPolicy hostPathPolicy;
     private final RegionResolver regionResolver;
     private final EksClusterManager clusterManager;
     private final Ec2Service ec2Service;
@@ -125,6 +127,7 @@ public class EksService implements TagHandler, ResourceProvider {
                 new TypeReference<Map<String, FargateProfile>>() {
                 });
         this.config = config;
+        this.hostPathPolicy = new HostPathPolicy(config, System::getenv);
         this.regionResolver = regionResolver;
         this.clusterManager = clusterManager;
         this.ec2Service = ec2Service;
@@ -563,6 +566,17 @@ public class EksService implements TagHandler, ResourceProvider {
         }
         if (!clusterArgs.isEmpty()) {
             cluster.setClusterArgs(clusterArgs);
+        }
+
+        List<String> hostVolumes;
+        try {
+            hostVolumes = EksHostVolumes.parse(request.getTags());
+        } catch (IllegalArgumentException e) {
+            throw new AwsException("InvalidParameterException", e.getMessage(), 400);
+        }
+        EksHostVolumes.validateHostPaths(hostVolumes, hostPathPolicy, config);
+        if (!hostVolumes.isEmpty()) {
+            cluster.setHostVolumes(hostVolumes);
         }
         cluster.setTags(request.getTags() != null ? ReservedTags.stripReservedTags(request.getTags()) : new HashMap<>());
 
