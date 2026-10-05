@@ -26,6 +26,7 @@ import io.github.hectorvent.floci.core.common.docker.ContainerLogStreamer;
 import io.github.hectorvent.floci.core.common.docker.ContainerSpec;
 import io.github.hectorvent.floci.core.common.docker.ContainerStorageHelper;
 import io.github.hectorvent.floci.core.common.docker.DockerHostResolver;
+import io.github.hectorvent.floci.core.common.docker.HostPathPolicy;
 import io.github.hectorvent.floci.core.common.docker.PortAllocator;
 import io.github.hectorvent.floci.core.common.docker.RetryingTarCopier;
 import io.github.hectorvent.floci.core.common.docker.UserDataPipeline;
@@ -162,6 +163,7 @@ public class EksClusterManager
     private final DockerHostResolver dockerHostResolver;
     private final EcrRegistryManager ecrRegistryManager;
     private final EmulatorConfig config;
+    private final HostPathPolicy hostPathPolicy;
     private final RegionResolver regionResolver;
     private final Ec2MetadataServer metadataServer;
     private final EksOidcService oidcService;
@@ -412,6 +414,7 @@ public class EksClusterManager
         this.dockerHostResolver = dockerHostResolver;
         this.ecrRegistryManager = ecrRegistryManager;
         this.config = config;
+        this.hostPathPolicy = new HostPathPolicy(config, System::getenv);
         this.regionResolver = regionResolver;
         this.metadataServer = metadataServer;
         this.oidcService = oidcService;
@@ -520,6 +523,11 @@ public class EksClusterManager
     }
 
     private void launchCluster(Cluster cluster, String image, String containerName, int hostPort) {
+        // Re-check stored host volumes against the current allowlist before touching the old
+        // container, so a root removed from the configuration refuses the launch instead of
+        // tearing the cluster down first.
+        EksHostVolumes.validateHostPaths(cluster.getHostVolumes(), hostPathPolicy, config);
+
         // Remove any stale container
         ContainerStorageHelper.removeStaleContainer(config, lifecycleManager, containerName);
 
@@ -612,6 +620,17 @@ public class EksClusterManager
                 .withPrivileged(true)
                 .withLogRotation()
                 .withLabels(labels);
+
+        if (cluster.getHostVolumes() != null) {
+            for (String spec : cluster.getHostVolumes()) {
+                EksHostVolumes.HostVolume volume = EksHostVolumes.toVolume(spec);
+                if (volume.readOnly()) {
+                    specBuilder.withReadOnlyBind(volume.hostPath(), volume.containerPath());
+                } else {
+                    specBuilder.withBind(volume.hostPath(), volume.containerPath());
+                }
+            }
+        }
 
         if (nodeLimits != null) {
             if (nodeLimits.memoryBytes() > 0) {

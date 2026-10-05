@@ -2,6 +2,7 @@ package io.github.hectorvent.floci.services.eks;
 
 import io.github.hectorvent.floci.config.EmulatorConfig;
 import io.github.hectorvent.floci.config.FlociCertificateAuthority;
+import io.github.hectorvent.floci.core.common.AwsException;
 import io.github.hectorvent.floci.core.common.AwsRegions;
 import io.github.hectorvent.floci.core.common.RegionResolver;
 import io.github.hectorvent.floci.core.common.dns.DnsAnswer;
@@ -3704,6 +3705,73 @@ class EksClusterManagerTest {
             verify(builder).withCmd(cmdCaptor.capture());
             List<String> cmd = cmdCaptor.getValue();
             assertTrue(cmd.contains("--kubelet-arg=max-pods=250"));
+        }
+    }
+
+    @Nested
+    class HostVolumes {
+
+        private ContainerBuilder.Builder builder;
+        private ContainerLifecycleManager lifecycleManager;
+
+        private EksClusterManager manager(Optional<List<String>> roots) {
+            EmulatorConfig config = Mockito.mock(EmulatorConfig.class, Mockito.RETURNS_DEEP_STUBS);
+            when(config.services().eks().defaultImage()).thenReturn("rancher/k3s:v1.30.0-k3s1");
+            when(config.services().eks().hostVolumeRoots()).thenReturn(roots);
+            when(config.services().eks().allowUnsafeHostVolumes()).thenReturn(false);
+            when(config.docker().dockerHost()).thenReturn("unix:///var/run/docker.sock");
+            when(config.docker().dockerConfigPath()).thenReturn(Optional.empty());
+
+            lifecycleManager = Mockito.mock(ContainerLifecycleManager.class, Mockito.RETURNS_DEEP_STUBS);
+            when(lifecycleManager.create(any())).thenReturn("container-id");
+
+            ContainerBuilder containerBuilder = Mockito.mock(ContainerBuilder.class);
+            builder = Mockito.mock(ContainerBuilder.Builder.class, Mockito.RETURNS_SELF);
+            when(containerBuilder.newContainer(anyString())).thenReturn(builder);
+            when(builder.build()).thenReturn(Mockito.mock(ContainerSpec.class));
+
+            return new EksClusterManager(containerBuilder, lifecycleManager,
+                    Mockito.mock(ContainerDetector.class), Mockito.mock(PortAllocator.class),
+                    Mockito.mock(DockerHostResolver.class), Mockito.mock(EcrRegistryManager.class),
+                    config, new RegionResolver("us-east-1", "000000000000"));
+        }
+
+        @Test
+        void startClusterBindsEachHostVolume(@TempDir Path root) {
+            EksClusterManager manager = manager(Optional.of(List.of(root.toString())));
+            Cluster cluster = new Cluster();
+            cluster.setName("my-cluster");
+            cluster.setHostVolumes(List.of(root + "/projects:/workspace", root + "/data:/data:ro"));
+
+            manager.startCluster(cluster);
+
+            verify(builder).withBind(root + "/projects", "/workspace");
+            verify(builder).withReadOnlyBind(root + "/data", "/data");
+        }
+
+        @Test
+        void startClusterWithoutHostVolumesAddsNoBinds() {
+            EksClusterManager manager = manager(Optional.empty());
+            Cluster cluster = new Cluster();
+            cluster.setName("my-cluster");
+
+            manager.startCluster(cluster);
+
+            verify(builder, never()).withBind(anyString(), anyString());
+            verify(builder, never()).withReadOnlyBind(anyString(), anyString());
+        }
+
+        @Test
+        void startClusterRevalidatesHostVolumesBeforeBinding(@TempDir Path root) {
+            EksClusterManager manager = manager(Optional.empty());
+            Cluster cluster = new Cluster();
+            cluster.setName("my-cluster");
+            cluster.setHostVolumes(List.of(root + ":/workspace"));
+
+            assertThrows(AwsException.class, () -> manager.startCluster(cluster));
+
+            verify(builder, never()).withBind(anyString(), anyString());
+            verify(lifecycleManager, never()).create(any());
         }
     }
 }

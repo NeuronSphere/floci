@@ -702,6 +702,8 @@ floci:
       pod-identity-webhook: true   # register a mutating webhook that injects pod identity credentials (needs floci.tls.enabled)
       embedded-dns: true           # point cluster containers at Floci's embedded DNS to resolve Route 53 private zones
       vpc-route-programming: true  # program VPC routes into the cluster container for associated subnets
+      host-volume-roots: []        # approved parent dirs for floci:host-volume creation tags; empty rejects them
+      allow-unsafe-host-volumes: false
     mwaa:
       enabled: true
       mock: false

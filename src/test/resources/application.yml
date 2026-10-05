@@ -345,6 +345,8 @@ floci:
       imds: false
       irsa-signing-key: true
       embedded-dns: true
+      host-volume-roots: []
+      allow-unsafe-host-volumes: false
     mwaa:
       enabled: true
       mock: true

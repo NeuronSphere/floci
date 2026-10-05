@@ -88,18 +88,21 @@ public class EksController {
     /**
      * Sanitizes the cluster model before emitting it as an AWS API response.
      * explicitVersion is internal Floci metadata used for container image resolution
-     * across restarts and must not be included on the wire. Clearing it on a copy
+     * across restarts and must not be included on the wire, and hostVolumes names paths on
+     * the Floci host. Clearing it on a copy
      * causes Jackson to omit the property due to @JsonInclude(NON_DEFAULT).
      */
     private Cluster toClusterResponse(Cluster cluster) {
         if (cluster == null || (!cluster.isExplicitVersion() && cluster.getNodeInstanceType() == null
-                && cluster.getClusterArgs() == null && cluster.getDefaultStorageClass() == null)) {
+                && cluster.getClusterArgs() == null && cluster.getHostVolumes() == null
+                && cluster.getDefaultStorageClass() == null)) {
             return cluster;
         }
         Cluster response = cluster.copy();
         response.setExplicitVersion(false);
         response.setNodeInstanceType(null);
         response.setClusterArgs(null);
+        response.setHostVolumes(null);
         response.setDefaultStorageClass(null);
         return response;
     }

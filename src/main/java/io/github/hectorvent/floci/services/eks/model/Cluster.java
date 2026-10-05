@@ -111,6 +111,15 @@ public class Cluster {
     private List<String> clusterArgs;
 
     /**
+     * Host directories bind-mounted into the k3s container, passed at creation via reserved floci
+     * tags as normalized {@code /host/path:/container/path[:ro]} specs.
+     * Internal persisted metadata omitted from AWS API responses.
+     */
+    @JsonProperty("hostVolumes")
+    @JsonInclude(JsonInclude.Include.NON_EMPTY)
+    private List<String> hostVolumes;
+
+    /**
      * Internal setting indicating whether the cluster was started with k3s's bundled
      * local-path provisioner and default StorageClass. Persisted to storage so restored
      * clusters preserve their storage behavior across container recreations.
@@ -174,6 +183,9 @@ public class Cluster {
     public List<String> getClusterArgs() { return clusterArgs; }
     public void setClusterArgs(List<String> clusterArgs) { this.clusterArgs = clusterArgs; }
 
+    public List<String> getHostVolumes() { return hostVolumes; }
+    public void setHostVolumes(List<String> hostVolumes) { this.hostVolumes = hostVolumes; }
+
     public String getAccountId() { return accountId; }
     public void setAccountId(String accountId) { this.accountId = accountId; }
 
@@ -227,6 +239,7 @@ public class Cluster {
         c.dockerName = this.dockerName;
         c.nodeInstanceType = this.nodeInstanceType;
         c.clusterArgs = this.clusterArgs != null ? new ArrayList<>(this.clusterArgs) : null;
+        c.hostVolumes = this.hostVolumes != null ? new ArrayList<>(this.hostVolumes) : null;
         c.defaultStorageClass = this.defaultStorageClass;
         c.accessConfig = this.accessConfig;
         return c;
